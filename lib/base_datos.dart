@@ -53,4 +53,10 @@ class BaseDatosLocal {
     // Retorna el ID (el número de ticket) que SQLite le asignó a este viaje
     return idGenerado;
   }
+
+  // Esta función saca todo lo que hay en la tabla
+  Future<List<Map<String, dynamic>>> obtenerTodosLosViajes() async {
+    final db = await instancia.database;
+    return await db.query('viajes_offline');
+  }
 }

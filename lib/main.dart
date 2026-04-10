@@ -1,121 +1,250 @@
+import 'dart:async'; // Necesario para mantener la conexión abierta con el GPS
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart'; // Para calcular distancias
+import 'motor_gps.dart';
+import 'calculadora.dart';
+import 'base_datos.dart';
+import 'pantalla_historial.dart';
 
 void main() {
-  runApp(const MyApp());
+  runApp(const AplicacionPulpos());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class AplicacionPulpos extends StatelessWidget {
+  const AplicacionPulpos({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
-      ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      debugShowCheckedModeBanner: false,
+      title: 'Radio Taxis Pulpos',
+      theme: ThemeData(primarySwatch: Colors.blue),
+      home: const PantallaPrueba(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
+// 🔥 EVOLUCIÓN: Ahora es un StatefulWidget (Tiene memoria) 🔥
+class PantallaPrueba extends StatefulWidget {
+  const PantallaPrueba({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<PantallaPrueba> createState() => _PantallaPruebaState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class _PantallaPruebaState extends State<PantallaPrueba> {
+  // --- TUS NUEVAS VARIABLES DE ESTADO ---
+  double distanciaTotalKm = 0.0;
+  Position? posicionAnterior;
+  bool enViaje = false;
+  StreamSubscription<Position>?
+  suscripcionGPS; // El cable que nos conecta al satélite
 
-  void _incrementCounter() {
+  // --- FUNCIÓN PARA ARRANCAR EL TAXÍMETRO ---
+  void iniciarRastreo() async {
+    // Primero verificamos que el GPS funcione y tenga permisos
+    final posInicial = await MotorGPS.obtenerUbicacionActual();
+    if (posInicial == null) return; // Si no hay permiso, no hacemos nada
+
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      distanciaTotalKm = 0.0;
+      posicionAnterior = posInicial;
+      enViaje = true;
     });
+
+    // Abrimos el micrófono al satélite (Stream)
+    suscripcionGPS = MotorGPS.obtenerFlujoUbicacion().listen((
+      Position nuevaPosicion,
+    ) {
+      if (nuevaPosicion.accuracy > 20.0) {
+        print(
+          '👻 Señal rebotando (Margen: ${nuevaPosicion.accuracy}m). Ignorando...',
+        );
+        return; // Si el margen de error es mayor a 20 metros, descartamos el dato.
+      }
+
+      if (posicionAnterior != null) {
+        // Calculamos la distancia entre el punto anterior y el nuevo
+        double distanciaMetros = Geolocator.distanceBetween(
+          posicionAnterior!.latitude,
+          posicionAnterior!.longitude,
+          nuevaPosicion.latitude,
+          nuevaPosicion.longitude,
+        );
+
+        setState(() {
+          distanciaTotalKm +=
+              (distanciaMetros / 1000); // Convertimos metros a KM
+        });
+      }
+      posicionAnterior = nuevaPosicion;
+      print(
+        '📍 Movimiento detectado. Acumulado: ${distanciaTotalKm.toStringAsFixed(3)} km',
+      );
+    });
+  }
+
+  // --- FUNCIÓN PARA FRENAR EL TAXÍMETRO ---
+  void detenerRastreo() {
+    suscripcionGPS?.cancel(); // Cortamos la llamada satelital
+    setState(() {
+      enViaje = false;
+    });
+
+    // Mostramos cuánto recorrió en total
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '🛑 Viaje finalizado. Recorriste: ${distanciaTotalKm.toStringAsFixed(2)} km',
+          ),
+          backgroundColor: Colors.black87,
+        ),
+      );
+    }
+  }
+
+  // Por seguridad, si la app se cierra, apagamos el GPS
+  @override
+  void dispose() {
+    suscripcionGPS?.cancel();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
+      appBar: AppBar(title: const Text('Prueba de Sistema - El Alto')),
       body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Text('You have pushed the button this many times:'),
+            // --- BOTÓN 1: LA SIMULACIÓN (Mantenemos tu código seguro) ---
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.all(20),
+                backgroundColor: Colors.orange,
+              ),
+              onPressed: enViaje
+                  ? null
+                  : () async {
+                      // Se desactiva si estás en viaje real
+                      double tarifaFinal = calcularTarifa(
+                        distanciaKm: 5.0,
+                        costoBaseKm: 2.0,
+                        factorAltitud: 1.4,
+                        factorSuperficie: 2.5,
+                        tiempoDetencionMin: 10.0,
+                        costoMinutoDetencion: 0.5,
+                      );
+
+                      Map<String, dynamic> nuevoViaje = {
+                        'distancia_km': 5.0,
+                        'tiempo_detencion_min': 10.0,
+                        'factor_altitud': 1.4,
+                        'factor_superficie': 2.5,
+                        'tarifa_total': tarifaFinal,
+                        'estado_sincronizacion': 0,
+                        'fecha_hora': DateTime.now().toIso8601String(),
+                      };
+
+                      int id = await BaseDatosLocal.instancia.insertarViaje(
+                        nuevoViaje,
+                      );
+                      if (context.mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              '✅ Guardado. ID: $id | Bs $tarifaFinal',
+                            ),
+                            backgroundColor: Colors.green,
+                          ),
+                        );
+                      }
+                    },
+              child: const Text(
+                'SIMULAR CARRERA',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            // --- BOTÓN 2: HISTORIAL ---
+            OutlinedButton.icon(
+              icon: const Icon(Icons.history),
+              label: const Text(
+                'VER HISTORIAL',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              onPressed: enViaje
+                  ? null
+                  : () {
+                      // Se desactiva si estás en viaje real
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => const PantallaHistorial(),
+                        ),
+                      );
+                    },
+            ),
+
+            const SizedBox(height: 40),
+            const Divider(thickness: 2),
+            const SizedBox(height: 20),
+
+            // --- PANEL DEL TAXÍMETRO REAL ---
             Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+              'Distancia Real Recorrida',
+              style: TextStyle(fontSize: 16, color: Colors.grey[600]),
+            ),
+            Text(
+              '${distanciaTotalKm.toStringAsFixed(3)} KM', // Muestra 3 decimales para ver los metros
+              style: TextStyle(
+                fontSize: 48,
+                fontWeight: FontWeight.bold,
+                color: enViaje ? Colors.red : Colors.black,
+              ),
+            ),
+
+            const SizedBox(height: 20),
+
+            // --- BOTÓN 3: INICIAR / DETENER RASTREO (STREAM) ---
+            ElevatedButton.icon(
+              icon: Icon(
+                enViaje ? Icons.stop : Icons.play_arrow,
+                color: Colors.white,
+                size: 30,
+              ),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 30,
+                  vertical: 15,
+                ),
+                backgroundColor: enViaje ? Colors.red[900] : Colors.green[700],
+              ),
+              label: Text(
+                enViaje ? 'DETENER TAXÍMETRO' : 'INICIAR TAXÍMETRO',
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+              onPressed: () {
+                if (enViaje) {
+                  detenerRastreo();
+                } else {
+                  iniciarRastreo();
+                }
+              },
             ),
           ],
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
       ),
     );
   }
