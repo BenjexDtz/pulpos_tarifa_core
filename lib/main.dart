@@ -1,6 +1,6 @@
-import 'dart:async'; // Necesario para mantener la conexión abierta con el GPS
+import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart'; // Para calcular distancias
+import 'package:geolocator/geolocator.dart';
 import 'motor_gps.dart';
 import 'calculadora.dart';
 import 'base_datos.dart';
@@ -18,13 +18,16 @@ class AplicacionPulpos extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'Radio Taxis Pulpos',
-      theme: ThemeData(primarySwatch: Colors.blue),
+      theme: ThemeData(
+        primarySwatch: Colors.blue,
+        // Tipografía un poco más moderna para los números
+        fontFamily: 'Roboto',
+      ),
       home: const PantallaPrueba(),
     );
   }
 }
 
-// 🔥 EVOLUCIÓN: Ahora es un StatefulWidget (Tiene memoria) 🔥
 class PantallaPrueba extends StatefulWidget {
   const PantallaPrueba({super.key});
 
@@ -33,18 +36,19 @@ class PantallaPrueba extends StatefulWidget {
 }
 
 class _PantallaPruebaState extends State<PantallaPrueba> {
-  // --- TUS NUEVAS VARIABLES DE ESTADO ---
   double distanciaTotalKm = 0.0;
   Position? posicionAnterior;
   bool enViaje = false;
-  StreamSubscription<Position>?
-  suscripcionGPS; // El cable que nos conecta al satélite
+  StreamSubscription<Position>? suscripcionGPS;
 
-  // --- FUNCIÓN PARA ARRANCAR EL TAXÍMETRO ---
+  // Parámetros topográficos fijos por ahora (El Alto)
+  final double costoBase = 2.0;
+  final double fAltitud = 1.4;
+  final double fSuperficie = 2.5;
+
   void iniciarRastreo() async {
-    // Primero verificamos que el GPS funcione y tenga permisos
     final posInicial = await MotorGPS.obtenerUbicacionActual();
-    if (posInicial == null) return; // Si no hay permiso, no hacemos nada
+    if (posInicial == null) return;
 
     setState(() {
       distanciaTotalKm = 0.0;
@@ -52,59 +56,69 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
       enViaje = true;
     });
 
-    // Abrimos el micrófono al satélite (Stream)
     suscripcionGPS = MotorGPS.obtenerFlujoUbicacion().listen((
       Position nuevaPosicion,
     ) {
-      if (nuevaPosicion.accuracy > 20.0) {
-        print(
-          '👻 Señal rebotando (Margen: ${nuevaPosicion.accuracy}m). Ignorando...',
-        );
-        return; // Si el margen de error es mayor a 20 metros, descartamos el dato.
-      }
+      if (nuevaPosicion.accuracy > 20.0) return; // Filtro anti-fantasmas
 
       if (posicionAnterior != null) {
-        // Calculamos la distancia entre el punto anterior y el nuevo
         double distanciaMetros = Geolocator.distanceBetween(
           posicionAnterior!.latitude,
           posicionAnterior!.longitude,
           nuevaPosicion.latitude,
           nuevaPosicion.longitude,
         );
-
         setState(() {
-          distanciaTotalKm +=
-              (distanciaMetros / 1000); // Convertimos metros a KM
+          distanciaTotalKm += (distanciaMetros / 1000);
         });
       }
       posicionAnterior = nuevaPosicion;
-      print(
-        '📍 Movimiento detectado. Acumulado: ${distanciaTotalKm.toStringAsFixed(3)} km',
-      );
     });
   }
 
-  // --- FUNCIÓN PARA FRENAR EL TAXÍMETRO ---
-  void detenerRastreo() {
-    suscripcionGPS?.cancel(); // Cortamos la llamada satelital
+  void detenerRastreo() async {
+    suscripcionGPS?.cancel();
+
+    // Calculamos el precio final real
+    double tarifaFinal = calcularTarifa(
+      distanciaKm: distanciaTotalKm,
+      costoBaseKm: costoBase,
+      factorAltitud: fAltitud,
+      factorSuperficie: fSuperficie,
+      tiempoDetencionMin: 0.0, // Pendiente para la Fase 5
+      costoMinutoDetencion: 0.5,
+    );
+
+    // Guardamos el viaje real en SQLite
+    Map<String, dynamic> nuevoViaje = {
+      'distancia_km': distanciaTotalKm,
+      'tiempo_detencion_min': 0.0,
+      'factor_altitud': fAltitud,
+      'factor_superficie': fSuperficie,
+      'tarifa_total': tarifaFinal,
+      'estado_sincronizacion': 0,
+      'fecha_hora': DateTime.now().toIso8601String(),
+    };
+
+    int id = await BaseDatosLocal.instancia.insertarViaje(nuevoViaje);
+
     setState(() {
       enViaje = false;
     });
 
-    // Mostramos cuánto recorrió en total
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            '🛑 Viaje finalizado. Recorriste: ${distanciaTotalKm.toStringAsFixed(2)} km',
+            '✅ Viaje #$id guardado. Total a cobrar: Bs ${tarifaFinal.toStringAsFixed(2)}',
           ),
-          backgroundColor: Colors.black87,
+          backgroundColor: Colors.green[800],
+          duration: const Duration(seconds: 4),
         ),
       );
     }
   }
 
-  // Por seguridad, si la app se cierra, apagamos el GPS
   @override
   void dispose() {
     suscripcionGPS?.cancel();
@@ -113,137 +127,184 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
 
   @override
   Widget build(BuildContext context) {
+    // Calculamos la tarifa en vivo para mostrarla en la pantalla
+    double tarifaEnVivo = calcularTarifa(
+      distanciaKm: distanciaTotalKm,
+      costoBaseKm: costoBase,
+      factorAltitud: fAltitud,
+      factorSuperficie: fSuperficie,
+      tiempoDetencionMin: 0.0,
+      costoMinutoDetencion: 0.5,
+    );
+
     return Scaffold(
-      appBar: AppBar(title: const Text('Prueba de Sistema - El Alto')),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // --- BOTÓN 1: LA SIMULACIÓN (Mantenemos tu código seguro) ---
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.all(20),
-                backgroundColor: Colors.orange,
-              ),
-              onPressed: enViaje
-                  ? null
-                  : () async {
-                      // Se desactiva si estás en viaje real
-                      double tarifaFinal = calcularTarifa(
-                        distanciaKm: 5.0,
-                        costoBaseKm: 2.0,
-                        factorAltitud: 1.4,
-                        factorSuperficie: 2.5,
-                        tiempoDetencionMin: 10.0,
-                        costoMinutoDetencion: 0.5,
-                      );
-
-                      Map<String, dynamic> nuevoViaje = {
-                        'distancia_km': 5.0,
-                        'tiempo_detencion_min': 10.0,
-                        'factor_altitud': 1.4,
-                        'factor_superficie': 2.5,
-                        'tarifa_total': tarifaFinal,
-                        'estado_sincronizacion': 0,
-                        'fecha_hora': DateTime.now().toIso8601String(),
-                      };
-
-                      int id = await BaseDatosLocal.instancia.insertarViaje(
-                        nuevoViaje,
-                      );
-                      if (context.mounted) {
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: Text(
-                              '✅ Guardado. ID: $id | Bs $tarifaFinal',
-                            ),
-                            backgroundColor: Colors.green,
-                          ),
-                        );
-                      }
-                    },
-              child: const Text(
-                'SIMULAR CARRERA',
-                style: TextStyle(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 20),
-
-            // --- BOTÓN 2: HISTORIAL ---
-            OutlinedButton.icon(
-              icon: const Icon(Icons.history),
-              label: const Text(
-                'VER HISTORIAL',
+      // Si está en viaje, el fondo se vuelve negro (Modo Noche/Dashboard)
+      backgroundColor: enViaje ? Colors.black : Colors.grey[100],
+      appBar: enViaje
+          ? null // Ocultamos la barra superior para que parezca un taxímetro puro
+          : AppBar(
+              title: const Text(
+                'Radio Taxis Pulpos',
                 style: TextStyle(fontWeight: FontWeight.bold),
               ),
-              onPressed: enViaje
-                  ? null
-                  : () {
-                      // Se desactiva si estás en viaje real
-                      Navigator.push(
-                        context,
-                        MaterialPageRoute(
-                          builder: (context) => const PantallaHistorial(),
+              backgroundColor: Colors.blue[800],
+              foregroundColor: Colors.white,
+              elevation: 0,
+            ),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment:
+                CrossAxisAlignment.stretch, // Estira los botones
+            children: [
+              // --- PANEL CENTRAL DE DATOS ---
+              Expanded(
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: enViaje ? Colors.grey[900] : Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: enViaje
+                        ? []
+                        : [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.05),
+                              blurRadius: 10,
+                              offset: const Offset(0, 5),
+                            ),
+                          ],
+                    // Borde verde brillante si está en viaje
+                    border: enViaje
+                        ? Border.all(color: Colors.greenAccent, width: 2)
+                        : null,
+                  ),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      if (enViaje)
+                        const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.satellite_alt,
+                              color: Colors.greenAccent,
+                              size: 20,
+                            ),
+                            SizedBox(width: 10),
+                            Text(
+                              'SISTEMA ACTIVO',
+                              style: TextStyle(
+                                color: Colors.greenAccent,
+                                letterSpacing: 2,
+                              ),
+                            ),
+                          ],
                         ),
-                      );
-                    },
-            ),
 
-            const SizedBox(height: 40),
-            const Divider(thickness: 2),
-            const SizedBox(height: 20),
+                      SizedBox(height: enViaje ? 30 : 0),
 
-            // --- PANEL DEL TAXÍMETRO REAL ---
-            Text(
-              'Distancia Real Recorrida',
-              style: TextStyle(fontSize: 16, color: Colors.grey[600]),
-            ),
-            Text(
-              '${distanciaTotalKm.toStringAsFixed(3)} KM', // Muestra 3 decimales para ver los metros
-              style: TextStyle(
-                fontSize: 48,
-                fontWeight: FontWeight.bold,
-                color: enViaje ? Colors.red : Colors.black,
-              ),
-            ),
+                      Text(
+                        'TARIFA ACTUAL',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: enViaje ? Colors.grey[400] : Colors.grey,
+                        ),
+                      ),
+                      Text(
+                        'Bs ${tarifaEnVivo.toStringAsFixed(2)}',
+                        style: TextStyle(
+                          fontSize: 60,
+                          fontWeight: FontWeight.bold,
+                          color: enViaje ? Colors.white : Colors.green[700],
+                        ),
+                      ),
 
-            const SizedBox(height: 20),
+                      const Padding(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 40,
+                          vertical: 20,
+                        ),
+                        child: Divider(color: Colors.grey),
+                      ),
 
-            // --- BOTÓN 3: INICIAR / DETENER RASTREO (STREAM) ---
-            ElevatedButton.icon(
-              icon: Icon(
-                enViaje ? Icons.stop : Icons.play_arrow,
-                color: Colors.white,
-                size: 30,
-              ),
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 30,
-                  vertical: 15,
+                      Text(
+                        'DISTANCIA',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: enViaje ? Colors.grey[400] : Colors.grey,
+                        ),
+                      ),
+                      Text(
+                        '${distanciaTotalKm.toStringAsFixed(3)} KM',
+                        style: TextStyle(
+                          fontSize: 36,
+                          fontWeight: FontWeight.bold,
+                          color: enViaje ? Colors.white : Colors.black87,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-                backgroundColor: enViaje ? Colors.red[900] : Colors.green[700],
               ),
-              label: Text(
-                enViaje ? 'DETENER TAXÍMETRO' : 'INICIAR TAXÍMETRO',
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
+
+              const SizedBox(height: 30),
+
+              // --- BOTONES DE CONTROL ---
+              // Solo mostramos el historial y simulación si NO estamos en viaje
+              if (!enViaje) ...[
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.history),
+                  label: const Text('HISTORIAL DE VIAJES'),
+                  style: OutlinedButton.styleFrom(
+                    padding: const EdgeInsets.all(15),
+                    foregroundColor: Colors.blue[800],
+                    side: BorderSide(color: Colors.blue[800]!),
+                  ),
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const PantallaHistorial(),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 15),
+              ],
+
+              // El botón principal (Iniciar/Detener)
+              ElevatedButton.icon(
+                icon: Icon(
+                  enViaje ? Icons.stop_circle : Icons.play_circle_fill,
                   color: Colors.white,
+                  size: 28,
                 ),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.all(20),
+                  backgroundColor: enViaje ? Colors.red[700] : Colors.blue[800],
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(15),
+                  ),
+                ),
+                label: Text(
+                  enViaje ? 'FINALIZAR VIAJE Y COBRAR' : 'INICIAR NUEVO VIAJE',
+                  style: const TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
+                ),
+                onPressed: () {
+                  if (enViaje) {
+                    detenerRastreo();
+                  } else {
+                    iniciarRastreo();
+                  }
+                },
               ),
-              onPressed: () {
-                if (enViaje) {
-                  detenerRastreo();
-                } else {
-                  iniciarRastreo();
-                }
-              },
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
