@@ -1,5 +1,5 @@
 // Importamos tu archivo de lógica
-import 'calculadora.dart';
+import 'package:pulpos_tarifa_core/calculadora.dart';
 
 void main() {
   print('Iniciando batería de pruebas...');

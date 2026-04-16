@@ -10,6 +10,7 @@ double calcularTarifa({
   required double costoMinutoDetencion,
 }) {
   // Fórmula: T = D * Cb * FH * FR + Ct * Td
+
   double costoRecorrido =
       distanciaKm * costoBaseKm * factorAltitud * factorSuperficie;
   double costoDetencion = tiempoDetencionMin * costoMinutoDetencion;

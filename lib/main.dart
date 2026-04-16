@@ -5,6 +5,7 @@ import 'motor_gps.dart';
 import 'calculadora.dart';
 import 'base_datos.dart';
 import 'pantalla_historial.dart';
+import 'pantalla_login.dart';
 
 void main() {
   runApp(const AplicacionPulpos());
@@ -18,12 +19,9 @@ class AplicacionPulpos extends StatelessWidget {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'Radio Taxis Pulpos',
-      theme: ThemeData(
-        primarySwatch: Colors.blue,
-        // Tipografía un poco más moderna para los números
-        fontFamily: 'Roboto',
-      ),
-      home: const PantallaPrueba(),
+      theme: ThemeData(primarySwatch: Colors.blue, fontFamily: 'Roboto'),
+      // 🔥 CAMBIO AQUÍ: Ahora arrancamos en la puerta de entrada
+      home: const PantallaLogin(),
     );
   }
 }
@@ -40,11 +38,35 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
   Position? posicionAnterior;
   bool enViaje = false;
   StreamSubscription<Position>? suscripcionGPS;
+  // --- Variables para el tiempo de detención ---
+  int segundosDetencion = 0; // Acumulador de segundos parados
+  Timer? relojDetencion; // El cronómetro que hará "tic-tac"
+  bool estaDetenido = false; // Estado actual del vehículo
 
-  // Parámetros topográficos fijos por ahora (El Alto)
+  // Parámetros topográficos
   final double costoBase = 2.0;
-  final double fAltitud = 1.4;
-  final double fSuperficie = 2.5;
+  final double fAltitud = 1.4; // Sigue fijo por ahora
+
+  // 🔥 ¡La magia! Ahora es dinámica. Empieza en 1.0 (Asfalto)
+  double fSuperficie = 1.0;
+
+  void iniciarRelojDetencion() {
+    relojDetencion = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (enViaje && posicionAnterior != null) {
+        // Si la velocidad es menor a 0.5 m/s (casi quieto)
+        if (posicionAnterior!.speed < 0.5) {
+          setState(() {
+            segundosDetencion++;
+            estaDetenido = true;
+          });
+        } else {
+          setState(() {
+            estaDetenido = false;
+          });
+        }
+      }
+    });
+  }
 
   void iniciarRastreo() async {
     final posInicial = await MotorGPS.obtenerUbicacionActual();
@@ -52,14 +74,17 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
 
     setState(() {
       distanciaTotalKm = 0.0;
+      segundosDetencion = 0; //Empezamos con 0 segundos de trancadera
       posicionAnterior = posInicial;
       enViaje = true;
     });
 
+    iniciarRelojDetencion(); //Encendemos el cronómetro
+
     suscripcionGPS = MotorGPS.obtenerFlujoUbicacion().listen((
       Position nuevaPosicion,
     ) {
-      if (nuevaPosicion.accuracy > 20.0) return; // Filtro anti-fantasmas
+      if (nuevaPosicion.accuracy > 20.0) return;
 
       if (posicionAnterior != null) {
         double distanciaMetros = Geolocator.distanceBetween(
@@ -78,21 +103,22 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
 
   void detenerRastreo() async {
     suscripcionGPS?.cancel();
+    relojDetencion?.cancel(); //Apagamos el reloj para que no consuma memoria
 
-    // Calculamos el precio final real
     double tarifaFinal = calcularTarifa(
       distanciaKm: distanciaTotalKm,
       costoBaseKm: costoBase,
       factorAltitud: fAltitud,
       factorSuperficie: fSuperficie,
-      tiempoDetencionMin: 0.0, // Pendiente para la Fase 5
+      // 🔥 NUEVO: Convertimos los segundos a minutos reales
+      tiempoDetencionMin: (segundosDetencion / 60),
       costoMinutoDetencion: 0.5,
     );
 
-    // Guardamos el viaje real en SQLite
     Map<String, dynamic> nuevoViaje = {
       'distancia_km': distanciaTotalKm,
-      'tiempo_detencion_min': 0.0,
+      // 🔥 NUEVO: Guardamos el tiempo real en SQLite
+      'tiempo_detencion_min': (segundosDetencion / 60),
       'factor_altitud': fAltitud,
       'factor_superficie': fSuperficie,
       'tarifa_total': tarifaFinal,
@@ -104,13 +130,14 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
 
     setState(() {
       enViaje = false;
+      fSuperficie = 1.0; // Reseteamos a asfalto al terminar
     });
 
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            '✅ Viaje #$id guardado. Total a cobrar: Bs ${tarifaFinal.toStringAsFixed(2)}',
+            '✅ Viaje guardado. Total: Bs ${tarifaFinal.toStringAsFixed(2)}',
           ),
           backgroundColor: Colors.green[800],
           duration: const Duration(seconds: 4),
@@ -127,21 +154,20 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
 
   @override
   Widget build(BuildContext context) {
-    // Calculamos la tarifa en vivo para mostrarla en la pantalla
     double tarifaEnVivo = calcularTarifa(
       distanciaKm: distanciaTotalKm,
       costoBaseKm: costoBase,
       factorAltitud: fAltitud,
       factorSuperficie: fSuperficie,
-      tiempoDetencionMin: 0.0,
+      // Aquí también convertimos los segundos a minutos
+      tiempoDetencionMin: (segundosDetencion / 60),
       costoMinutoDetencion: 0.5,
     );
 
     return Scaffold(
-      // Si está en viaje, el fondo se vuelve negro (Modo Noche/Dashboard)
       backgroundColor: enViaje ? Colors.black : Colors.grey[100],
       appBar: enViaje
-          ? null // Ocultamos la barra superior para que parezca un taxímetro puro
+          ? null
           : AppBar(
               title: const Text(
                 'Radio Taxis Pulpos',
@@ -156,10 +182,8 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
           padding: const EdgeInsets.all(20.0),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
-            crossAxisAlignment:
-                CrossAxisAlignment.stretch, // Estira los botones
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // --- PANEL CENTRAL DE DATOS ---
               Expanded(
                 child: Container(
                   decoration: BoxDecoration(
@@ -174,7 +198,6 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
                               offset: const Offset(0, 5),
                             ),
                           ],
-                    // Borde verde brillante si está en viaje
                     border: enViaje
                         ? Border.all(color: Colors.greenAccent, width: 2)
                         : null,
@@ -202,7 +225,7 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
                           ],
                         ),
 
-                      SizedBox(height: enViaje ? 30 : 0),
+                      SizedBox(height: enViaje ? 20 : 0),
 
                       Text(
                         'TARIFA ACTUAL',
@@ -224,7 +247,7 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
                       const Padding(
                         padding: EdgeInsets.symmetric(
                           horizontal: 40,
-                          vertical: 20,
+                          vertical: 15,
                         ),
                         child: Divider(color: Colors.grey),
                       ),
@@ -245,6 +268,67 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
                           color: enViaje ? Colors.white : Colors.black87,
                         ),
                       ),
+
+                      const SizedBox(height: 20),
+
+                      // 🔥 NUEVO: Selector de Superficie
+                      Text(
+                        'TIPO DE RUTA',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: enViaje ? Colors.grey[500] : Colors.grey,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          ChoiceChip(
+                            label: const Text(
+                              'ASFALTO',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            selected: fSuperficie == 1.0,
+                            onSelected: (bool selected) {
+                              setState(() {
+                                fSuperficie = 1.0;
+                              });
+                            },
+                            selectedColor: Colors.blue[800],
+                            backgroundColor: enViaje
+                                ? Colors.grey[800]
+                                : Colors.grey[200],
+                            labelStyle: TextStyle(
+                              color: fSuperficie == 1.0
+                                  ? Colors.white
+                                  : (enViaje ? Colors.grey[300] : Colors.black),
+                            ),
+                          ),
+                          const SizedBox(width: 15),
+                          ChoiceChip(
+                            label: const Text(
+                              'TIERRA / COMPLEJO',
+                              style: TextStyle(fontWeight: FontWeight.bold),
+                            ),
+                            selected: fSuperficie == 2.5,
+                            onSelected: (bool selected) {
+                              setState(() {
+                                fSuperficie = 2.5;
+                              });
+                            },
+                            selectedColor: Colors.orange[800],
+                            backgroundColor: enViaje
+                                ? Colors.grey[800]
+                                : Colors.grey[200],
+                            labelStyle: TextStyle(
+                              color: fSuperficie == 2.5
+                                  ? Colors.white
+                                  : (enViaje ? Colors.grey[300] : Colors.black),
+                            ),
+                          ),
+                        ],
+                      ),
                     ],
                   ),
                 ),
@@ -252,8 +336,6 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
 
               const SizedBox(height: 30),
 
-              // --- BOTONES DE CONTROL ---
-              // Solo mostramos el historial y simulación si NO estamos en viaje
               if (!enViaje) ...[
                 OutlinedButton.icon(
                   icon: const Icon(Icons.history),
@@ -273,7 +355,6 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
                 const SizedBox(height: 15),
               ],
 
-              // El botón principal (Iniciar/Detener)
               ElevatedButton.icon(
                 icon: Icon(
                   enViaje ? Icons.stop_circle : Icons.play_circle_fill,
