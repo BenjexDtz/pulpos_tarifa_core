@@ -6,6 +6,7 @@ import 'calculadora.dart';
 import 'base_datos.dart';
 import 'pantalla_historial.dart';
 import 'pantalla_login.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // 🔥 NUEVO IMPORT
 
 void main() {
   runApp(const AplicacionPulpos());
@@ -103,21 +104,26 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
 
   void detenerRastreo() async {
     suscripcionGPS?.cancel();
-    relojDetencion?.cancel(); //Apagamos el reloj para que no consuma memoria
+    relojDetencion?.cancel();
+    //Apagamos el reloj para que no consuma memoria
 
     double tarifaFinal = calcularTarifa(
       distanciaKm: distanciaTotalKm,
       costoBaseKm: costoBase,
       factorAltitud: fAltitud,
       factorSuperficie: fSuperficie,
-      // 🔥 NUEVO: Convertimos los segundos a minutos reales
       tiempoDetencionMin: (segundosDetencion / 60),
       costoMinutoDetencion: 0.5,
     );
 
+    // 🔥 NUEVO: Rescatamos la memoria de quién inició sesión
+    final prefs = await SharedPreferences.getInstance();
+    // Si por algún motivo no hay ID, usamos 1 como respaldo temporal
+    int idChoferReal = prefs.getInt('chofer_id') ?? 1;
+
     Map<String, dynamic> nuevoViaje = {
+      'chofer_id': idChoferReal, // 🔥 AHORA SÍ, EL VIAJE TIENE DUEÑO
       'distancia_km': distanciaTotalKm,
-      // 🔥 NUEVO: Guardamos el tiempo real en SQLite
       'tiempo_detencion_min': (segundosDetencion / 60),
       'factor_altitud': fAltitud,
       'factor_superficie': fSuperficie,
