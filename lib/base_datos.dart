@@ -20,14 +20,20 @@ class BaseDatosLocal {
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, filePath);
 
-    return await openDatabase(path, version: 1, onCreate: _crearDB);
+    return await openDatabase(
+      path,
+      version: 2, // 🔥 SUBIMOS A VERSION 2 PARA FORZAR LA MIGRACION
+      onCreate: _crearDB,
+      onUpgrade: _actualizarDB, // 🔥 MANEJA TELEFONOS CON LA DB VIEJA
+    );
   }
 
   // Aquí es donde ocurre la magia de SQL que diseñamos
   Future _crearDB(Database db, int version) async {
     await db.execute('''
-      CREATE TABLE viajes_offline (
+      CREATE TABLE viajes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chofer_id INTEGER,
         distancia_km REAL,
         tiempo_detencion_min REAL,
         factor_altitud REAL,
@@ -37,26 +43,30 @@ class BaseDatosLocal {
         fecha_hora TEXT
       )
     ''');
-  } // <--- ¡AQUÍ SE CIERRA _crearDB!
+  }
+
+  // 🔥 MIGRACIÓN: Si el teléfono tiene la DB vieja (v1), la borra y recrea
+  Future _actualizarDB(Database db, int oldVersion, int newVersion) async {
+    await db.execute('DROP TABLE IF EXISTS viajes_offline');
+    await db.execute('DROP TABLE IF EXISTS viajes');
+    await _crearDB(db, newVersion);
+  }
 
   // Función para guardar un nuevo viaje en la "caja negra"
   Future<int> insertarViaje(Map<String, dynamic> viaje) async {
-    // 1. Abrimos la conexión a la base de datos
     final db = await instancia.database;
 
-    // 2. Le pedimos a sqflite que haga el INSERT de forma segura
     int idGenerado = await db.insert(
-      'viajes_offline', // El nombre exacto de la tabla
-      viaje, // El mapa con los datos (distancia, tarifa, fecha, etc.)
+      'viajes', // 🔥 NOMBRE UNIFICADO
+      viaje,
     );
 
-    // Retorna el ID (el número de ticket) que SQLite le asignó a este viaje
     return idGenerado;
   }
 
   // Esta función saca todo lo que hay en la tabla
   Future<List<Map<String, dynamic>>> obtenerTodosLosViajes() async {
     final db = await instancia.database;
-    return await db.query('viajes_offline');
+    return await db.query('viajes'); // 🔥 NOMBRE UNIFICADO
   }
 }

@@ -6,7 +6,9 @@ import 'calculadora.dart';
 import 'base_datos.dart';
 import 'pantalla_historial.dart';
 import 'pantalla_login.dart';
-import 'package:shared_preferences/shared_preferences.dart'; // 🔥 NUEVO IMPORT
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 
 void main() {
   runApp(const AplicacionPulpos());
@@ -21,7 +23,6 @@ class AplicacionPulpos extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Radio Taxis Pulpos',
       theme: ThemeData(primarySwatch: Colors.blue, fontFamily: 'Roboto'),
-      // 🔥 CAMBIO AQUÍ: Ahora arrancamos en la puerta de entrada
       home: const PantallaLogin(),
     );
   }
@@ -40,21 +41,88 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
   bool enViaje = false;
   StreamSubscription<Position>? suscripcionGPS;
   // --- Variables para el tiempo de detención ---
-  int segundosDetencion = 0; // Acumulador de segundos parados
-  Timer? relojDetencion; // El cronómetro que hará "tic-tac"
-  bool estaDetenido = false; // Estado actual del vehículo
+  int segundosDetencion = 0;
+  Timer? relojDetencion;
+  bool estaDetenido = false;
 
   // Parámetros topográficos
   final double costoBase = 2.0;
-  final double fAltitud = 1.4; // Sigue fijo por ahora
+  final double fAltitud = 1.4;
 
-  // 🔥 ¡La magia! Ahora es dinámica. Empieza en 1.0 (Asfalto)
   double fSuperficie = 1.0;
+
+  // ==========================================
+  // 🔥 FUNCIÓN: SINCRONIZAR VIAJES (ahora en el State, donde corresponde)
+  // ==========================================
+  Future<void> sincronizarViajesPendientes() async {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('🔄 Sincronizando viajes con la central...'),
+      ),
+    );
+
+    final db = await BaseDatosLocal.instancia.database;
+    final pendientes = await db.query(
+      'viajes',
+      where: 'estado_sincronizacion = ?',
+      whereArgs: [0],
+    );
+
+    if (pendientes.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('✅ Todo al día. No hay viajes pendientes.'),
+        ),
+      );
+      return;
+    }
+
+    int viajesEnviados = 0;
+
+    for (var viaje in pendientes) {
+      try {
+        // ⚠️ ¡ATENCIÓN! CAMBIA ESTO POR LA IP DE TU COMPUTADORA
+        final url = Uri.parse('http://192.168.0.9:3000/api/viajes/sincronizar');
+
+        final response = await http.post(
+          url,
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'chofer_id': viaje['chofer_id'],
+            'distancia_km': viaje['distancia_km'],
+            'tiempo_detencion_min': viaje['tiempo_detencion_min'],
+            'tarifa_cobrada': viaje['tarifa_total'],
+            'fecha_hora_viaje': viaje['fecha_hora'],
+          }),
+        );
+
+        if (response.statusCode == 201) {
+          await db.update(
+            'viajes',
+            {'estado_sincronizacion': 1},
+            where: 'id = ?',
+            whereArgs: [viaje['id']],
+          );
+          viajesEnviados++;
+        }
+      } catch (e) {
+        print("Error de red: $e");
+      }
+    }
+
+    if (context.mounted && viajesEnviados > 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('📡 Éxito: $viajesEnviados viajes subidos a gerencia.'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    }
+  }
 
   void iniciarRelojDetencion() {
     relojDetencion = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (enViaje && posicionAnterior != null) {
-        // Si la velocidad es menor a 0.5 m/s (casi quieto)
         if (posicionAnterior!.speed < 0.5) {
           setState(() {
             segundosDetencion++;
@@ -75,12 +143,12 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
 
     setState(() {
       distanciaTotalKm = 0.0;
-      segundosDetencion = 0; //Empezamos con 0 segundos de trancadera
+      segundosDetencion = 0;
       posicionAnterior = posInicial;
       enViaje = true;
     });
 
-    iniciarRelojDetencion(); //Encendemos el cronómetro
+    iniciarRelojDetencion();
 
     suscripcionGPS = MotorGPS.obtenerFlujoUbicacion().listen((
       Position nuevaPosicion,
@@ -105,7 +173,6 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
   void detenerRastreo() async {
     suscripcionGPS?.cancel();
     relojDetencion?.cancel();
-    //Apagamos el reloj para que no consuma memoria
 
     double tarifaFinal = calcularTarifa(
       distanciaKm: distanciaTotalKm,
@@ -116,13 +183,11 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
       costoMinutoDetencion: 0.5,
     );
 
-    // 🔥 NUEVO: Rescatamos la memoria de quién inició sesión
     final prefs = await SharedPreferences.getInstance();
-    // Si por algún motivo no hay ID, usamos 1 como respaldo temporal
     int idChoferReal = prefs.getInt('chofer_id') ?? 1;
 
     Map<String, dynamic> nuevoViaje = {
-      'chofer_id': idChoferReal, // 🔥 AHORA SÍ, EL VIAJE TIENE DUEÑO
+      'chofer_id': idChoferReal,
       'distancia_km': distanciaTotalKm,
       'tiempo_detencion_min': (segundosDetencion / 60),
       'factor_altitud': fAltitud,
@@ -136,7 +201,7 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
 
     setState(() {
       enViaje = false;
-      fSuperficie = 1.0; // Reseteamos a asfalto al terminar
+      fSuperficie = 1.0;
     });
 
     if (context.mounted) {
@@ -155,6 +220,7 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
   @override
   void dispose() {
     suscripcionGPS?.cancel();
+    relojDetencion?.cancel();
     super.dispose();
   }
 
@@ -165,7 +231,6 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
       costoBaseKm: costoBase,
       factorAltitud: fAltitud,
       factorSuperficie: fSuperficie,
-      // Aquí también convertimos los segundos a minutos
       tiempoDetencionMin: (segundosDetencion / 60),
       costoMinutoDetencion: 0.5,
     );
@@ -277,7 +342,6 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
 
                       const SizedBox(height: 20),
 
-                      // 🔥 NUEVO: Selector de Superficie
                       Text(
                         'TIPO DE RUTA',
                         style: TextStyle(
@@ -343,20 +407,39 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
               const SizedBox(height: 30),
 
               if (!enViaje) ...[
-                OutlinedButton.icon(
-                  icon: const Icon(Icons.history),
-                  label: const Text('HISTORIAL DE VIAJES'),
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.all(15),
-                    foregroundColor: Colors.blue[800],
-                    side: BorderSide(color: Colors.blue[800]!),
-                  ),
-                  onPressed: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => const PantallaHistorial(),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.history),
+                        label: const Text('HISTORIAL'),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 15),
+                          foregroundColor: Colors.blue[800],
+                          side: BorderSide(color: Colors.blue[800]!),
+                        ),
+                        onPressed: () => Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => const PantallaHistorial(),
+                          ),
+                        ),
+                      ),
                     ),
-                  ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        icon: const Icon(Icons.cloud_upload),
+                        label: const Text('SINC. NUBE'),
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(vertical: 15),
+                          foregroundColor: Colors.green[700],
+                          side: BorderSide(color: Colors.green[700]!),
+                        ),
+                        onPressed: sincronizarViajesPendientes,
+                      ),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 15),
               ],

@@ -1,49 +1,49 @@
 import 'package:geolocator/geolocator.dart';
+import 'package:flutter/foundation.dart'; // 🔥 NUEVO IMPORT NECESARIO
 
 class MotorGPS {
-  // Esta función es el "portero". Revisa si tenemos permiso y prende el GPS.
   static Future<Position?> obtenerUbicacionActual() async {
     bool servicioHabilitado;
     LocationPermission permiso;
 
-    // 1. ¿El usuario tiene el GPS (la antenita) encendido en su celular?
     servicioHabilitado = await Geolocator.isLocationServiceEnabled();
-    if (!servicioHabilitado) {
-      print('⚠️ ALERTA: El GPS del celular está apagado.');
-      return null;
-    }
+    if (!servicioHabilitado) return null;
 
-    // 2. Revisamos si la app ya tiene permiso
     permiso = await Geolocator.checkPermission();
     if (permiso == LocationPermission.denied) {
-      // Si no tiene, le lanzamos la ventanita de Android pidiendo permiso
       permiso = await Geolocator.requestPermission();
-      if (permiso == LocationPermission.denied) {
-        print('❌ ERROR: El usuario denegó el permiso del GPS.');
-        return null;
-      }
+      if (permiso == LocationPermission.denied) return null;
     }
 
-    if (permiso == LocationPermission.deniedForever) {
-      print('❌ ERROR FATAL: Los permisos están denegados permanentemente.');
-      return null;
-    }
+    if (permiso == LocationPermission.deniedForever) return null;
 
-    // 3. Si pasamos todas las barreras de seguridad, ¡leemos el satélite!
-    // Usamos 'high' para que sea exacto para un taxi.
-    print('🛰️ Conectando a satélites... calculando posición...');
     return await Geolocator.getCurrentPosition(
       desiredAccuracy: LocationAccuracy.high,
     );
   }
 
-  // Nuevo método: Crea un "flujo" de posiciones constantes
+  // 🔥 AQUÍ ESTÁ LA MAGIA DEL ESCUDO (FOREGROUND SERVICE)
   static Stream<Position> obtenerFlujoUbicacion() {
-    // Definimos la configuración del rastreo
-    const locationSettings = LocationSettings(
-      accuracy: LocationAccuracy.high, // Alta precisión para El Alto
-      distanceFilter: 10, // Solo nos avisa si el taxi se movió más de 5 metros
-    );
+    late LocationSettings locationSettings;
+
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      // Configuración especial para que Android no mate la app
+      locationSettings = AndroidSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 10,
+        forceLocationManager: true,
+        foregroundNotificationConfig: const ForegroundNotificationConfig(
+          notificationText: "Calculando tarifa y distancia...",
+          notificationTitle: "Radio Taxis Pulpos Activo 🚖",
+          enableWakeLock: true, // Evita que el procesador se duerma
+        ),
+      );
+    } else {
+      locationSettings = const LocationSettings(
+        accuracy: LocationAccuracy.high,
+        distanceFilter: 10,
+      );
+    }
 
     return Geolocator.getPositionStream(locationSettings: locationSettings);
   }
