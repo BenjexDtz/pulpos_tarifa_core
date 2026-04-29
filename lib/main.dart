@@ -36,30 +36,47 @@ class PantallaPrueba extends StatefulWidget {
 }
 
 class _PantallaPruebaState extends State<PantallaPrueba> {
+  // ── GPS y métricas del viaje ───────────────────────────────────────────────
   double distanciaTotalKm = 0.0;
   Position? posicionAnterior;
   bool enViaje = false;
   StreamSubscription<Position>? suscripcionGPS;
-  // --- Variables para el tiempo de detención ---
   int segundosDetencion = 0;
   Timer? relojDetencion;
   bool estaDetenido = false;
 
-  // Parámetros topográficos
-  final double costoBase = 2.0;
-  final double fAltitud = 1.4;
+  // ── Parámetros topográficos (desde servidor) ───────────────────────────────
+  ParametrosTopograficos? _params;
+  bool _cargandoParams = true;
 
+  // Factor de superficie elegido por el conductor (1.0 asfalto / 2.5 tierra)
   double fSuperficie = 1.0;
 
-  // ==========================================
-  // 🔥 FUNCIÓN: SINCRONIZAR VIAJES (ahora en el State, donde corresponde)
-  // ==========================================
+  @override
+  void initState() {
+    super.initState();
+    _cargarParametros();
+  }
+
+  // 🔥 Descarga los parámetros del servidor al iniciar la pantalla
+  Future<void> _cargarParametros() async {
+    setState(() => _cargandoParams = true);
+    final params = await ParametrosService.obtener();
+    setState(() {
+      _params = params;
+      _cargandoParams = false;
+    });
+  }
+
+  // ── Sincronización de viajes ───────────────────────────────────────────────
   Future<void> sincronizarViajesPendientes() async {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('🔄 Sincronizando viajes con la central...'),
       ),
     );
+
+    const String urlBase = 'http://192.168.0.102:3000'; // ⚠️ Cambia tu IP
 
     final db = await BaseDatosLocal.instancia.database;
     final pendientes = await db.query(
@@ -69,23 +86,21 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
     );
 
     if (pendientes.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('✅ Todo al día. No hay viajes pendientes.'),
-        ),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('✅ Todo al día. No hay viajes pendientes.'),
+          ),
+        );
+      }
       return;
     }
 
-    int viajesEnviados = 0;
-
+    int enviados = 0;
     for (var viaje in pendientes) {
       try {
-        // ⚠️ ¡ATENCIÓN! CAMBIA ESTO POR LA IP DE TU COMPUTADORA
-        final url = Uri.parse('http://192.168.0.9:3000/api/viajes/sincronizar');
-
         final response = await http.post(
-          url,
+          Uri.parse('$urlBase/api/viajes/sincronizar'),
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode({
             'chofer_id': viaje['chofer_id'],
@@ -95,7 +110,6 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
             'fecha_hora_viaje': viaje['fecha_hora'],
           }),
         );
-
         if (response.statusCode == 201) {
           await db.update(
             'viajes',
@@ -103,24 +117,25 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
             where: 'id = ?',
             whereArgs: [viaje['id']],
           );
-          viajesEnviados++;
+          enviados++;
         }
       } catch (e) {
         print("Error de red: $e");
       }
     }
 
-    if (context.mounted && viajesEnviados > 0) {
+    if (mounted && enviados > 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('📡 Éxito: $viajesEnviados viajes subidos a gerencia.'),
+          content: Text('📡 Éxito: $enviados viaje(s) subidos a gerencia.'),
           backgroundColor: Colors.green,
         ),
       );
     }
   }
 
-  void iniciarRelojDetencion() {
+  // ── Control del viaje ──────────────────────────────────────────────────────
+  void _iniciarRelojDetencion() {
     relojDetencion = Timer.periodic(const Duration(seconds: 1), (timer) {
       if (enViaje && posicionAnterior != null) {
         if (posicionAnterior!.speed < 0.5) {
@@ -141,6 +156,7 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
     final posInicial = await MotorGPS.obtenerUbicacionActual();
     if (posInicial == null) return;
 
+    MotorGPS.resetContador();
     setState(() {
       distanciaTotalKm = 0.0;
       segundosDetencion = 0;
@@ -148,22 +164,21 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
       enViaje = true;
     });
 
-    iniciarRelojDetencion();
+    _iniciarRelojDetencion();
 
     suscripcionGPS = MotorGPS.obtenerFlujoUbicacion().listen((
       Position nuevaPosicion,
     ) {
       if (nuevaPosicion.accuracy > 20.0) return;
-
       if (posicionAnterior != null) {
-        double distanciaMetros = Geolocator.distanceBetween(
+        double metros = Geolocator.distanceBetween(
           posicionAnterior!.latitude,
           posicionAnterior!.longitude,
           nuevaPosicion.latitude,
           nuevaPosicion.longitude,
         );
         setState(() {
-          distanciaTotalKm += (distanciaMetros / 1000);
+          distanciaTotalKm += (metros / 1000);
         });
       }
       posicionAnterior = nuevaPosicion;
@@ -174,37 +189,43 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
     suscripcionGPS?.cancel();
     relojDetencion?.cancel();
 
+    // Enviar última posición al servidor
+    if (posicionAnterior != null) {
+      await MotorGPS.enviarUltimaPosicion(posicionAnterior!);
+    }
+
+    // Usar parámetros del servidor (o por defecto si no cargaron)
+    final params = _params ?? ParametrosTopograficos.porDefecto;
+
     double tarifaFinal = calcularTarifa(
       distanciaKm: distanciaTotalKm,
-      costoBaseKm: costoBase,
-      factorAltitud: fAltitud,
+      costoBaseKm: params.costoBaseKm,
+      factorAltitud: params.factorAltitud,
       factorSuperficie: fSuperficie,
       tiempoDetencionMin: (segundosDetencion / 60),
-      costoMinutoDetencion: 0.5,
+      costoMinutoDetencion: params.costoMinutoDetencion,
     );
 
     final prefs = await SharedPreferences.getInstance();
-    int idChoferReal = prefs.getInt('chofer_id') ?? 1;
+    int idChofer = prefs.getInt('chofer_id') ?? 1;
 
-    Map<String, dynamic> nuevoViaje = {
-      'chofer_id': idChoferReal,
+    await BaseDatosLocal.instancia.insertarViaje({
+      'chofer_id': idChofer,
       'distancia_km': distanciaTotalKm,
       'tiempo_detencion_min': (segundosDetencion / 60),
-      'factor_altitud': fAltitud,
+      'factor_altitud': params.factorAltitud,
       'factor_superficie': fSuperficie,
       'tarifa_total': tarifaFinal,
       'estado_sincronizacion': 0,
       'fecha_hora': DateTime.now().toIso8601String(),
-    };
-
-    int id = await BaseDatosLocal.instancia.insertarViaje(nuevoViaje);
+    });
 
     setState(() {
       enViaje = false;
       fSuperficie = 1.0;
     });
 
-    if (context.mounted) {
+    if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -226,13 +247,15 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
 
   @override
   Widget build(BuildContext context) {
+    final params = _params ?? ParametrosTopograficos.porDefecto;
+
     double tarifaEnVivo = calcularTarifa(
       distanciaKm: distanciaTotalKm,
-      costoBaseKm: costoBase,
-      factorAltitud: fAltitud,
+      costoBaseKm: params.costoBaseKm,
+      factorAltitud: params.factorAltitud,
       factorSuperficie: fSuperficie,
       tiempoDetencionMin: (segundosDetencion / 60),
-      costoMinutoDetencion: 0.5,
+      costoMinutoDetencion: params.costoMinutoDetencion,
     );
 
     return Scaffold(
@@ -247,6 +270,32 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
               backgroundColor: Colors.blue[800],
               foregroundColor: Colors.white,
               elevation: 0,
+              actions: [
+                // Indicador de parámetros cargados
+                Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: _cargandoParams
+                      ? const Center(
+                          child: SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                              strokeWidth: 2,
+                            ),
+                          ),
+                        )
+                      : Tooltip(
+                          message:
+                              'Cb: ${params.costoBaseKm} | FH: ${params.factorAltitud}',
+                          child: const Icon(
+                            Icons.cloud_done,
+                            color: Colors.greenAccent,
+                            size: 20,
+                          ),
+                        ),
+                ),
+              ],
             ),
       body: SafeArea(
         child: Padding(
@@ -276,7 +325,7 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      if (enViaje)
+                      if (enViaje) ...[
                         const Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
@@ -295,9 +344,8 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
                             ),
                           ],
                         ),
-
-                      SizedBox(height: enViaje ? 20 : 0),
-
+                        const SizedBox(height: 20),
+                      ],
                       Text(
                         'TARIFA ACTUAL',
                         style: TextStyle(
@@ -314,15 +362,15 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
                           color: enViaje ? Colors.white : Colors.green[700],
                         ),
                       ),
-
-                      const Padding(
-                        padding: EdgeInsets.symmetric(
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
                           horizontal: 40,
                           vertical: 15,
                         ),
-                        child: Divider(color: Colors.grey),
+                        child: Divider(
+                          color: enViaje ? Colors.grey[700] : Colors.grey,
+                        ),
                       ),
-
                       Text(
                         'DISTANCIA',
                         style: TextStyle(
@@ -339,9 +387,7 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
                           color: enViaje ? Colors.white : Colors.black87,
                         ),
                       ),
-
                       const SizedBox(height: 20),
-
                       Text(
                         'TIPO DE RUTA',
                         style: TextStyle(
@@ -360,11 +406,8 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
                               style: TextStyle(fontWeight: FontWeight.bold),
                             ),
                             selected: fSuperficie == 1.0,
-                            onSelected: (bool selected) {
-                              setState(() {
-                                fSuperficie = 1.0;
-                              });
-                            },
+                            onSelected: (_) =>
+                                setState(() => fSuperficie = 1.0),
                             selectedColor: Colors.blue[800],
                             backgroundColor: enViaje
                                 ? Colors.grey[800]
@@ -381,31 +424,39 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
                               'TIERRA / COMPLEJO',
                               style: TextStyle(fontWeight: FontWeight.bold),
                             ),
-                            selected: fSuperficie == 2.5,
-                            onSelected: (bool selected) {
-                              setState(() {
-                                fSuperficie = 2.5;
-                              });
-                            },
+                            selected: fSuperficie != 1.0,
+                            onSelected: (_) => setState(
+                              () => fSuperficie = params.factorSuperficie,
+                            ),
                             selectedColor: Colors.orange[800],
                             backgroundColor: enViaje
                                 ? Colors.grey[800]
                                 : Colors.grey[200],
                             labelStyle: TextStyle(
-                              color: fSuperficie == 2.5
+                              color: fSuperficie != 1.0
                                   ? Colors.white
                                   : (enViaje ? Colors.grey[300] : Colors.black),
                             ),
                           ),
                         ],
                       ),
+                      // Mostrar parámetros activos (transparencia para el tribunal)
+                      if (!enViaje) ...[
+                        const SizedBox(height: 16),
+                        Text(
+                          'Cb: Bs ${params.costoBaseKm}/km · FH: ${params.factorAltitud}× · Ct: Bs ${params.costoMinutoDetencion}/min',
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: Colors.grey[400],
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
                     ],
                   ),
                 ),
               ),
-
               const SizedBox(height: 30),
-
               if (!enViaje) ...[
                 Row(
                   children: [
@@ -421,7 +472,7 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
                         onPressed: () => Navigator.push(
                           context,
                           MaterialPageRoute(
-                            builder: (context) => const PantallaHistorial(),
+                            builder: (_) => const PantallaHistorial(),
                           ),
                         ),
                       ),
@@ -443,7 +494,6 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
                 ),
                 const SizedBox(height: 15),
               ],
-
               ElevatedButton.icon(
                 icon: Icon(
                   enViaje ? Icons.stop_circle : Icons.play_circle_fill,
@@ -466,11 +516,10 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
                   ),
                 ),
                 onPressed: () {
-                  if (enViaje) {
+                  if (enViaje)
                     detenerRastreo();
-                  } else {
+                  else
                     iniciarRastreo();
-                  }
                 },
               ),
             ],
