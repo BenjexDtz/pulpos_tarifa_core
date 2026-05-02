@@ -76,7 +76,7 @@ class _PantallaPruebaState extends State<PantallaPrueba> {
       ),
     );
 
-    const String urlBase = 'http://192.168.0.102:3000'; // ⚠️ Cambia tu IP
+    const String urlBase = 'http://192.168.0.9:3000'; // ⚠️ Cambia tu IP
 
     final db = await BaseDatosLocal.instancia.database;
     final pendientes = await db.query(
